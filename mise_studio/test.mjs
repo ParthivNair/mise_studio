@@ -2,13 +2,14 @@ import { readFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import vm from "node:vm";
 import { randomUUID } from "node:crypto";
+import { validateWorkspace } from "./public/storage.js";
 
 const source = readFileSync(
   new URL("./public/app.js", import.meta.url),
   "utf8",
 );
 const saved = new Map();
-function session(path = "/") {
+function session(path = "/", hooks = {}) {
   const nodes = new Map();
   const listeners = {};
   let focused;
@@ -18,6 +19,8 @@ function session(path = "/") {
         value: "",
         innerHTML: "",
         textContent: "",
+        disabled: false,
+        dataset: {},
         setAttribute(k, v) {
           this[k] = v;
         },
@@ -100,6 +103,26 @@ function session(path = "/") {
     console,
     AbortController,
     URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+    fetch:
+      hooks.fetch ||
+      (async (url) => {
+        if (String(url).includes("/api/recipe-search")) {
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({
+              error: {
+                code: "SEARCH_NOT_CONFIGURED",
+                message: "Search is not configured on this server.",
+              },
+            }),
+          };
+        }
+        throw new Error("fetch is not mocked");
+      }),
   });
   vm.runInContext(
     "(function(){" +
@@ -115,6 +138,17 @@ function session(path = "/") {
       new URL("./public/timeline-model.js", import.meta.url),
       "utf8",
     ).replaceAll("export function", "function"),
+    context,
+  );
+  vm.runInContext(
+    "(function(){" +
+      readFileSync(
+        new URL("./public/recipe-import.js", import.meta.url),
+        "utf8",
+      )
+        .replaceAll("export async function", "async function")
+        .replaceAll("export function", "function") +
+      ";globalThis.bindRecipeImport=bindRecipeImport;globalThis.bindRecipeSearch=bindRecipeSearch;globalThis.recipeSearchMarkup=recipeSearchMarkup;globalThis.matchSavedRecipes=matchSavedRecipes;globalThis.looksLikeHttpUrl=looksLikeHttpUrl;globalThis.applyImportedRecipe=applyImportedRecipe;globalThis.importedRecipeToDraft=importedRecipeToDraft;globalThis.formatImportNotice=formatImportNotice;})()",
     context,
   );
   vm.runInContext(source.replace(/^import [\s\S]*?;$/gm, ""), context);
@@ -258,8 +292,9 @@ input("#ingredient-0", "2 tomatoes");
 w.node("#ingredient-0").onkeydown({ key: "Enter", preventDefault() {} });
 input("#ingredient-1", "Fresh basil leaves");
 input("#step-0", "Slice and toss.");
+input("#minutes-0", "invalid");
 assert.equal(w.run(`commitRecipe('${id}')`), false);
-assert.match(w.node("#recipe-error").textContent, /duration/);
+assert.match(w.node("#recipe-error").textContent, /Durations/);
 input("#minutes-0", "-1");
 assert.equal(w.run(`commitRecipe('${id}')`), false);
 input("#minutes-0", "5.5");
@@ -293,7 +328,7 @@ w.run(
   'addCourse();addDish(project.courses[0]);addDish(project.courses[0]);project.courses[0].dishes[0].name="Salad";project.courses[0].dishes[1].name="Soup";',
 );
 w.node("#finalize").onclick();
-assert.match(w.node("#recipes-panel").innerHTML, /Choose a saved recipe/);
+assert.match(w.node("#recipes-panel").innerHTML, /Find a recipe/);
 const firstDish = w.run("project.courses[0].dishes[0].id");
 w.node("#attach-0").onclick();
 assert.equal(w.run("project.courses[0].dishes[0].recipe.id"), id);
@@ -345,12 +380,16 @@ console.log(
 );
 const enhancements = session("/recipes");
 enhancements
-  .node("#recipe-tag-search")
+  .node("#recipe-search")
   .oninput({ target: { value: "vEgEtArIaN" } });
 assert.match(enhancements.node("#library-results").innerHTML, /Updated salad/);
 assert.doesNotMatch(enhancements.node("#library-results").innerHTML, />Soup</);
 enhancements
-  .node("#recipe-tag-search")
+  .node("#recipe-search")
+  .oninput({ target: { value: "Updated" } });
+assert.match(enhancements.node("#library-results").innerHTML, /Updated salad/);
+enhancements
+  .node("#recipe-search")
   .oninput({ target: { value: "nonexistent" } });
 assert.match(
   enhancements.node("#library-results").innerHTML,
@@ -522,12 +561,12 @@ assert.match(attachedView, /Slice and toss\./);
 assert.match(attachedView, /5.5 min/);
 assert.doesNotMatch(
   attachedView,
-  /Choose a saved recipe|Create new recipe|id="attach-/,
+  /Find a recipe|Create new recipe|id="attach-/,
 );
 enhancements.node("#unattach-recipe").onclick();
 assert.match(
   enhancements.node("#recipes-panel").innerHTML,
-  /Choose a saved recipe/,
+  /Find a recipe/,
 );
 assert.doesNotMatch(
   enhancements.node("#recipes-panel").innerHTML,
@@ -769,6 +808,225 @@ assert.doesNotMatch(
   session("/recipes").node("#app").innerHTML,
   /import-recipe/,
 );
+assert.match(
+  session("/recipes").node("#app").innerHTML,
+  /Find a recipe or paste a link/,
+);
+assert.match(session("/recipes").node("#app").innerHTML, /role="combobox"/);
+const importer = session("/recipe/new/import-draft");
+importer.run(
+  `recipeDrafts['import-draft']={id:'import-draft',title:'',servings:4,tags:[],ingredients:[''],steps:[{text:'',minutes:''}],returnTo:null};showRecipeEditor('import-draft');`,
+);
+assert.match(importer.node("#app").innerHTML, /id="import-from-url"/);
+assert.match(importer.node("#app").innerHTML, /id="import-from-text"/);
+importer.run(
+  `applyImportedRecipe(recipeDrafts['import-draft'], {title:'Imported soup', yield:{raw:'4 servings',servings:4}, ingredients:[{raw:'1 onion'}], steps:[{text:'Simmer gently.', minutes:null}], source:{url:'https://recipes.example.com/soup'}});`,
+);
+assert.equal(importer.run(`recipeDrafts['import-draft'].title`), "Imported soup");
+assert.equal(importer.run(`recipeDrafts['import-draft'].ingredients[0]`), "1 onion");
+assert.equal(importer.run(`recipeDrafts['import-draft'].steps[0].minutes`), "");
+assert.equal(
+  importer.run(`recipeDrafts['import-draft'].sourceUrl`),
+  "https://recipes.example.com/soup",
+);
+const pasted = session("/recipe/new/paste-draft", {
+  fetch: async (url, options) => {
+    assert.equal(String(url), "/api/recipe-import");
+    assert.equal(JSON.parse(options.body).text.includes("Ingredients"), true);
+    return {
+      ok: true,
+      json: async () => ({
+        status: "ready_for_review",
+        warnings: [],
+        recipes: [
+          {
+            title: "Pasted salad",
+            yield: { raw: "", servings: null },
+            ingredients: [{ raw: "1 test cucumber" }],
+            steps: [{ text: "Slice thinly.", minutes: null }],
+            source: { extractor: "labelled-text", fetchedAt: "2026-09-12T00:00:00.000Z", version: "1" },
+            warnings: [],
+          },
+        ],
+      }),
+    };
+  },
+});
+pasted.run(
+  `recipeDrafts['paste-draft']={id:'paste-draft',title:'',servings:4,tags:[],ingredients:[''],steps:[{text:'',minutes:''}],returnTo:null};showRecipeEditor('paste-draft');`,
+);
+pasted.node("#import-text").value =
+  "Pasted salad\n\nIngredients\n- 1 test cucumber\n\nInstructions\n1. Slice thinly.";
+await pasted.node("#import-from-text").onclick();
+assert.equal(pasted.run(`recipeDrafts['paste-draft'].title`), "Pasted salad");
+assert.equal(
+  pasted.run(`recipeDrafts['paste-draft'].steps[0].minutes`),
+  "",
+);
+assert.match(
+  pasted.run(`recipeDrafts['paste-draft'].importNotice`),
+  /times|timing|duration/,
+);
+console.log(
+  "PASS: recipe URL/text import fills a reviewable draft without inventing step durations.",
+);
+const finder = session("/recipes", {
+  fetch: async (url, options) => {
+    if (String(url).includes("/api/recipe-search")) {
+      return {
+        ok: true,
+        json: async () => ({
+          query: "pad",
+          provider: "brave",
+          results: [
+            {
+              id: "webpad",
+              url: "https://recipes.example.com/pad-thai",
+              title: "Weeknight Pad Thai",
+              source: "recipes.example.com",
+              snippet: "Tamarind noodles.",
+            },
+          ],
+          hasMore: false,
+        }),
+      };
+    }
+    if (String(url) === "/api/recipe-import") {
+      assert.equal(
+        JSON.parse(options.body).url,
+        "https://recipes.example.com/pad-thai",
+      );
+      return {
+        ok: true,
+        json: async () => ({
+          status: "ready_for_review",
+          warnings: [],
+          recipes: [
+            {
+              title: "Weeknight Pad Thai",
+              yield: { raw: "4 servings", servings: 4 },
+              ingredients: [{ raw: "8 oz rice noodles" }, { raw: "2 eggs" }],
+              steps: [
+                { text: "Soak the noodles.", minutes: null },
+                { text: "Stir-fry quickly.", minutes: null },
+              ],
+              source: {
+                url: "https://recipes.example.com/pad-thai",
+                extractor: "schema.org-jsonld",
+                fetchedAt: "2026-09-12T00:00:00.000Z",
+                version: "1",
+              },
+              warnings: [],
+            },
+          ],
+        }),
+      };
+    }
+    throw new Error("unexpected fetch " + url);
+  },
+});
+finder.run(
+  "savedRecipes.padLocal={id:'padLocal',title:'Home pad thai',servings:2,tags:['Thai'],ingredients:['rice noodles'],steps:[{text:'Boil',minutes:10}]};render()",
+);
+assert.equal(finder.run("looksLikeHttpUrl('https://recipes.example.com/x')"), true);
+assert.equal(finder.run("looksLikeHttpUrl('pad thai')"), false);
+finder.node("#recipe-search").oninput({ target: { value: "pad" } });
+assert.match(finder.node("#library-results").innerHTML, /Home pad thai/);
+assert.match(finder.node("#recipe-search-list").innerHTML, /Your recipes/);
+assert.match(
+  finder.node("#recipe-search-list").innerHTML,
+  /Home <mark class="recipe-search-mark">pad<\/mark> thai/,
+);
+await new Promise((resolve) => setTimeout(resolve, 450));
+assert.match(finder.node("#recipe-search-list").innerHTML, /From the web/);
+assert.match(
+  finder.node("#recipe-search-list").innerHTML,
+  /Weeknight <mark class="recipe-search-mark">Pad<\/mark> Thai/,
+);
+const savedCount = finder.run("Object.keys(savedRecipes).length");
+finder.node("#recipe-search-option-1").onclick();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const importedId = finder.run("Object.keys(recipeDrafts).at(-1)");
+assert.match(finder.context.location.pathname, /\/recipe\/new\//);
+assert.equal(
+  finder.run(`recipeDrafts['${importedId}'].title`),
+  "Weeknight Pad Thai",
+);
+assert.equal(
+  finder.run(`recipeDrafts['${importedId}'].ingredients[0]`),
+  "8 oz rice noodles",
+);
+assert.equal(finder.run(`recipeDrafts['${importedId}'].steps.length`), 2);
+assert.equal(
+  finder.run(`recipeDrafts['${importedId}'].steps[0].minutes`),
+  "",
+);
+assert.equal(finder.run(`savedRecipes['${importedId}']`), undefined);
+assert.equal(finder.run("Object.keys(savedRecipes).length"), savedCount);
+assert.match(finder.node("#app").innerHTML, /Save recipe/);
+assert.match(finder.node("#app").innerHTML, /Soak the noodles/);
+console.log(
+  "PASS: Google-style recipe search opens a populated draft without saving it to the library.",
+);
+let searchCalls = 0;
+const searchCache = session("/recipes", {
+  fetch: async (url) => {
+    if (String(url).includes("/api/recipe-search")) {
+      searchCalls += 1;
+      if (searchCalls > 1) {
+        return {
+          ok: false,
+          status: 502,
+          json: async () => ({
+            error: {
+              code: "PROVIDER_BAD_RESPONSE",
+              message: "blocked",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          query: "soup",
+          provider: "open",
+          results: [
+            {
+              id: "oncesoup",
+              url: "https://recipes.example.com/soup",
+              title: "Once soup",
+              source: "recipes.example.com",
+              snippet: "A bowl.",
+            },
+          ],
+          hasMore: false,
+        }),
+      };
+    }
+    throw new Error("unexpected fetch " + url);
+  },
+});
+searchCache.node("#recipe-search").oninput({ target: { value: "soup" } });
+await new Promise((resolve) => setTimeout(resolve, 450));
+assert.match(
+  searchCache.node("#recipe-search-list").innerHTML,
+  /Once <mark class="recipe-search-mark">soup<\/mark>/,
+);
+assert.equal(searchCalls, 1);
+searchCache.node("#recipe-search").onfocus();
+await new Promise((resolve) => setTimeout(resolve, 450));
+assert.match(
+  searchCache.node("#recipe-search-list").innerHTML,
+  /Once <mark class="recipe-search-mark">soup<\/mark>/,
+);
+assert.doesNotMatch(
+  searchCache.node("#recipe-search-list").innerHTML,
+  /unavailable|blocked/i,
+);
+assert.equal(searchCalls, 1);
+console.log(
+  "PASS: repeating the same recipe search keeps the first successful results.",
+);
 const timeline = session();
 timeline.run(
   `savedRecipes.timelineRecipe={id:'timelineRecipe',title:'Dinner',servings:4,tags:[],ingredients:['salt'],steps:[{text:'Chop vegetables',minutes:10},{text:'Cook gently',minutes:20},{text:'Plate dinner',minutes:5}]};createProject();project.courses=[{id:'c1',name:'Main',time:'18:00',dishes:[{id:'d1',name:'Dish one',recipe:{provider:'custom',id:'timelineRecipe'}},{id:'d2',name:'Dish two',recipe:{provider:'custom',id:'timelineRecipe'}}]},{id:'c2',name:'Dessert',time:'18:30',dishes:[{id:'d3',name:'Dish three',recipe:{provider:'custom',id:'timelineRecipe'}}]}];setTab('timeline');`,
@@ -954,7 +1212,7 @@ cardLayout.run("savedRecipes.cardExample={id:'cardExample',title:'Card example',
 assert.match(cardLayout.node('#app').innerHTML,/Serves 6, 27.5 min across 3 steps/);
 assert.doesNotMatch(cardLayout.node('#app').innerHTML,/1 ingredients · 3 steps/);
 assert.match(cardLayout.node('#app').innerHTML,/id="new-recipe"/);assert.match(cardLayout.node('#app').innerHTML,/class="project-card new-recipe-card" id="new-recipe-card"/);
-cardLayout.node('#recipe-tag-search').oninput({target:{value:'nothing-matches-this-tag'}});assert.match(cardLayout.node('#library-results').innerHTML,/new-recipe-card/);
+cardLayout.node('#recipe-search').oninput({target:{value:'nothing-matches-this-tag'}});assert.match(cardLayout.node('#library-results').innerHTML,/new-recipe-card/);
 cardLayout.node('#library-results').onclick({target:{closest:selector=>selector==='#new-recipe-card'?{}:null}});assert.match(cardLayout.context.location.pathname,/\/recipe\/new\//);
 assert.match(readFileSync(new URL('./public/style.css',import.meta.url),'utf8'),/\.saved-recipe-grid\s*\{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
 console.log('PASS: saved recipe summary, removed bottom counts, additional working recipe card after filtering, and three-column grid.');

@@ -17,23 +17,37 @@ function recipe(value) {
     record(value) &&
       id(value.id) &&
       string(value.title) &&
-      scalar(value.servings),
+      (value.servings === null || scalar(value.servings)),
   );
   assert(strings(value.tags) && strings(value.ingredients));
   assert(optional(value.ingredientQuantities, strings));
   assert(
     Array.isArray(value.steps) &&
       value.steps.every(
-        (step) => record(step) && string(step.text) && scalar(step.minutes),
+        (step) => record(step) && string(step.text) && (step.minutes === null || scalar(step.minutes)),
       ),
   );
   assert(optional(value.sourceUrl, string));
+  assert(optional(value.importMetadata, metadata));
+  assert(optional(value.ingredientMetadata, (items) => Array.isArray(items) && items.length <= 1000 && items.every(record)));
   assert(
     !value.returnTo ||
       (record(value.returnTo) &&
         id(value.returnTo.projectId) &&
         id(value.returnTo.dishId)),
   );
+}
+function metadata(value) {
+  if (!record(value) || value.schemaVersion !== 1) return false;
+  for (const key of ["recipeId", "revisionId", "dishId"])
+    if (value[key] != null && !id(value[key])) return false;
+  if (value.source != null && !record(value.source)) return false;
+  if (value.yield != null && (!record(value.yield) || !string(value.yield.raw) ||
+    (value.yield.servings != null && (!Number.isFinite(value.yield.servings) || value.yield.servings <= 0)))) return false;
+  if (value.times != null && !record(value.times)) return false;
+  if (value.warnings !== undefined && (!Array.isArray(value.warnings) || !value.warnings.every(item => record(item) && string(item.message)))) return false;
+  if (value.ingredients !== undefined && (!Array.isArray(value.ingredients) || !value.ingredients.every(record))) return false;
+  return true;
 }
 function project(value) {
   assert(
@@ -106,6 +120,7 @@ function project(value) {
 }
 export function validateWorkspace(data) {
   assert(record(data));
+  assert(data.schemaVersion === undefined || data.schemaVersion === 3);
   const result = {};
   for (const [field, validate] of [
     ["projects", project],

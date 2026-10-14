@@ -59,6 +59,7 @@ export function timelineModel(p, recipes) {
               ? "Add recipe steps."
               : recipe.steps.some(
                     (s) =>
+                      s.minutes == null ||
                       String(s.minutes).trim() === "" ||
                       !Number.isFinite(Number(s.minutes)) ||
                       Number(s.minutes) < 0,

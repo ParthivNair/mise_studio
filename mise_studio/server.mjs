@@ -1,12 +1,15 @@
 import http from "node:http";
 import { gzipSync } from "node:zlib";
 import { readFile, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { createRecipeApi } from "./lib/recipe-api.mjs";
 
 const routes = new Map([
   ["/", ["index.html", "text/html"]],
   ["/app.js", ["app.js", "text/javascript"]],
+  ["/recipe-import.js", ["recipe-import.js", "text/javascript"]],
   ["/timeline-model.js", ["timeline-model.js", "text/javascript"]],
   ["/storage.js", ["storage.js", "text/javascript"]],
   ["/style.css", ["style.css", "text/css"]],
@@ -19,21 +22,24 @@ const securityHeaders = {
   "Referrer-Policy": "no-referrer",
   "Cross-Origin-Opener-Policy": "same-origin",
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 };
 
-export function createAppServer() {
+export function createAppServer(options = {}) {
+  const handleRecipeApi =
+    options.handleRecipeApi || createRecipeApi(options.recipe);
   const cache = new Map();
   const server = http.createServer(async (req, res) => {
     for (const [name, value] of Object.entries(securityHeaders))
       res.setHeader(name, value);
     try {
+      const pathname = new URL(req.url, "http://localhost").pathname;
+      if (await handleRecipeApi(req, res)) return;
       if (!["GET", "HEAD"].includes(req.method)) {
         res.writeHead(405, { Allow: "GET, HEAD" });
         res.end("Method not allowed");
         return;
       }
-      const pathname = new URL(req.url, "http://localhost").pathname;
       const route =
         routes.get(pathname) ||
         (pageRoute.test(pathname) ? routes.get("/") : null);
@@ -101,16 +107,46 @@ export function createAppServer() {
       res.end("Unable to load Mise Studio");
     }
   });
+  server.on("close", () => { handleRecipeApi.close?.(); });
   server.headersTimeout = 10000;
   server.requestTimeout = 15000;
   server.keepAliveTimeout = 5000;
   return server;
 }
 
+function applyEnvFile(fileUrl) {
+  let text;
+  try {
+    text = readFileSync(fileUrl, "utf8");
+  } catch {
+    return;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key] !== undefined) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    )
+      value = value.slice(1, -1);
+    process.env[key] = value;
+  }
+}
+
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+  applyEnvFile(new URL("./.env", import.meta.url));
+  applyEnvFile(
+    new URL("../../../recipe-discovery-service/.env", import.meta.url),
+  );
   const port = Number(process.env.PORT || 8000);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error("PORT must be an integer between 1 and 65535");

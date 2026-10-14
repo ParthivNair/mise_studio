@@ -40,7 +40,8 @@ a:focus-visible {
   outline: 3px solid #7799d1;
   outline-offset: 4px;
 }
-input:focus {
+input:focus,
+textarea:focus {
   outline: 3px solid #d9e5fa;
   border-color: #6586bb;
 }
@@ -906,22 +907,214 @@ a.primary {
     gap: 12px;
   }
 }
-.tag-search {
+.recipe-import > p {
+  color: #637080;
+  font-size: 14px;
+}
+.recipe-import .entry-row {
+  align-items: end;
+}
+.recipe-import .secondary {
+  margin: 8px 0 0;
+}
+.recipe-import-status {
+  color: #637080;
+  min-height: 1.4em;
+}
+.recipe-import-status[data-kind="error"] {
+  color: #a53333;
+}
+.import-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.recipe-search {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 420px;
-  margin: 20px 0 28px;
+  width: 100%;
+  max-width: 640px;
+  margin: 8px 0 28px;
   font-size: 14px;
   font-weight: 600;
+  position: relative;
 }
-.tag-search input {
+.recipe-search-box {
+  position: relative;
+}
+.recipe-search input[type="search"] {
   font: inherit;
-  padding: 12px 14px;
+  font-weight: 400;
+  width: 100%;
+  padding: 14px 18px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 24px;
   background: white;
   color: var(--ink);
+  box-shadow: 0 1px 6px #233e710f;
+}
+.recipe-search input[type="search"]:focus {
+  outline: none;
+  border-color: #6586bb;
+  box-shadow:
+    0 1px 8px #233e7120,
+    0 0 0 3px #d9e5fa;
+}
+.recipe-search input[type="search"][aria-expanded="true"] {
+  border-radius: 24px 24px 0 0;
+  border-color: #6586bb;
+  box-shadow: none;
+}
+.recipe-search-list {
+  position: absolute;
+  z-index: 12;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin: 0;
+  margin-top: -1px;
+  padding: 0 0 8px;
+  list-style: none;
+  background: white;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 24px 24px;
+  box-shadow: 0 1px 6px #233e710f;
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.recipe-search input[aria-expanded="true"] + .recipe-search-list {
+  border-color: #6586bb;
+}
+.recipe-search-list[hidden] {
+  display: none;
+}
+.recipe-search-list::before {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 0 18px 6px;
+  background: var(--line);
+}
+.recipe-search-group {
+  padding: 8px 18px 2px 44px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  pointer-events: none;
+  user-select: none;
+}
+.recipe-search-option {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 18px 7px 44px;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.35;
+  cursor: pointer;
+  scroll-margin-block: 6px;
+}
+.recipe-search-option::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  background: currentColor;
+  color: var(--muted);
+  opacity: 0.7;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: 16px 16px;
+  mask-size: 16px 16px;
+}
+.recipe-search-option[data-kind="suggest"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' fill-rule='evenodd' d='M6.5 1a5.5 5.5 0 1 0 .01 0zM6.5 3a3.5 3.5 0 1 0-.01 0zM10.15 10.85l.7-.7 2.7 2.7-.7.7z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' fill-rule='evenodd' d='M6.5 1a5.5 5.5 0 1 0 .01 0zM6.5 3a3.5 3.5 0 1 0-.01 0zM10.15 10.85l.7-.7 2.7 2.7-.7.7z'/%3E%3C/svg%3E");
+}
+.recipe-search-option[data-kind="url"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M6.354 5.5H4a3 3 0 0 0 0 6h3a3 3 0 0 0 2.83-4H9c-.086 0-.17.01-.25.031A2 2 0 0 1 7 10.5H4a2 2 0 1 1 0-4h1.535c.218-.376.495-.714.82-1z'/%3E%3Cpath fill='black' d='M9 5.5a3 3 0 0 0-2.83 4h1.098A2 2 0 0 1 9 6.5h3a2 2 0 1 1 0 4h-1.535a4.02 4.02 0 0 1-.82 1H12a3 3 0 1 0 0-6H9z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M6.354 5.5H4a3 3 0 0 0 0 6h3a3 3 0 0 0 2.83-4H9c-.086 0-.17.01-.25.031A2 2 0 0 1 7 10.5H4a2 2 0 1 1 0-4h1.535c.218-.376.495-.714.82-1z'/%3E%3Cpath fill='black' d='M9 5.5a3 3 0 0 0-2.83 4h1.098A2 2 0 0 1 9 6.5h3a2 2 0 1 1 0 4h-1.535a4.02 4.02 0 0 1-.82 1H12a3 3 0 1 0 0-6H9z'/%3E%3C/svg%3E");
+}
+.recipe-search-option[data-kind="saved"]::before,
+.recipe-search-option[data-kind="catalog"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M3.25 1.75h9.5a.75.75 0 0 1 .75.75v11.9l-5.5-3.05-5.5 3.05V2.5a.75.75 0 0 1 .75-.75z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M3.25 1.75h9.5a.75.75 0 0 1 .75.75v11.9l-5.5-3.05-5.5 3.05V2.5a.75.75 0 0 1 .75-.75z'/%3E%3C/svg%3E");
+}
+.recipe-search-option[data-kind="web"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' fill-rule='evenodd' d='M8 1.15a6.85 6.85 0 1 0 0 13.7 6.85 6.85 0 0 0 0-13.7zm0 1.55a5.3 5.3 0 1 1 0 10.6 5.3 5.3 0 0 1 0-10.6z'/%3E%3Cpath fill='black' d='M2.05 7.2h11.9v1.6H2.05z'/%3E%3Cpath fill='black' fill-rule='evenodd' d='M8 1.7c2.05 0 3.15 2.7 3.15 6.3S10.05 14.3 8 14.3 4.85 11.6 4.85 8 5.95 1.7 8 1.7zm0 1.55c1.05 0 1.6 2.05 1.6 4.75S9.05 12.75 8 12.75 6.4 10.7 6.4 8 6.95 3.25 8 3.25z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' fill-rule='evenodd' d='M8 1.15a6.85 6.85 0 1 0 0 13.7 6.85 6.85 0 0 0 0-13.7zm0 1.55a5.3 5.3 0 1 1 0 10.6 5.3 5.3 0 0 1 0-10.6z'/%3E%3Cpath fill='black' d='M2.05 7.2h11.9v1.6H2.05z'/%3E%3Cpath fill='black' fill-rule='evenodd' d='M8 1.7c2.05 0 3.15 2.7 3.15 6.3S10.05 14.3 8 14.3 4.85 11.6 4.85 8 5.95 1.7 8 1.7zm0 1.55c1.05 0 1.6 2.05 1.6 4.75S9.05 12.75 8 12.75 6.4 10.7 6.4 8 6.95 3.25 8 3.25z'/%3E%3C/svg%3E");
+}
+.recipe-search-option.is-active,
+.recipe-search-option[aria-selected="true"],
+.recipe-search-option:hover {
+  background: #f1f4f9;
+}
+.recipe-search-option-title {
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+.recipe-search-option-meta {
+  flex: 0 2 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recipe-search-mark {
+  background: none;
+  color: inherit;
+  font-weight: 650;
+}
+.recipe-search-message {
+  padding: 8px 18px 8px 44px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.recipe-search-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.recipe-import .recipe-search {
+  max-width: none;
+  margin: 0 0 16px;
+}
+.saved-projects h2 + .recipe-search {
+  margin-top: 0;
+}
+@media (max-width: 650px) {
+  .recipe-search-option {
+    min-height: 44px;
+  }
+  .recipe-search-list {
+    max-height: min(320px, 50vh);
+  }
 }
 .tag-suggestions {
   display: flex;

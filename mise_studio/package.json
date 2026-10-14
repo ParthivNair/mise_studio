@@ -6,10 +6,14 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs",
-    "build": "node --check server.mjs && node --check public/app.js && node --check public/storage.js && node --check public/timeline-model.js",
-    "test": "node test.mjs && node infrastructure.test.mjs"
+    "build": "node --check server.mjs && node --check lib/recipe-api.mjs && node --check public/app.js && node --check public/recipe-import.js && node --check public/storage.js && node --check public/timeline-model.js",
+    "test": "node test.mjs && node infrastructure.test.mjs && node --test \"test/**/*.test.*\""
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24.19.0"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0",
+    "ipaddr.js": "2.5.0"
   }
 }

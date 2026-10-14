@@ -1,5 +1,11 @@
 import { loadWorkspace } from "./storage.js";
 import { timelineTime, timelineModel } from "./timeline-model.js";
+import {
+  bindRecipeImport,
+  bindRecipeSearch,
+  matchSavedRecipes,
+  recipeSearchMarkup,
+} from "./recipe-import.js";
 const app = document.querySelector("#app");
 const storageKey = "mise-studio-data-v2";
 let projects = Object.create(null),
@@ -10,6 +16,11 @@ let projects = Object.create(null),
 let storageReadFailed = false,
   lastStored = null,
   storageConflict = false;
+let recipeBindings = [];
+function disposeRecipeBindings() {
+  for (const binding of recipeBindings) binding?.dispose?.();
+  recipeBindings = [];
+}
 try {
   lastStored = localStorage.getItem(storageKey);
   const data = loadWorkspace(localStorage, storageKey);
@@ -21,7 +32,7 @@ try {
   storageReadFailed = true;
 }
 const snapshot = () =>
-  JSON.stringify({ projects, recipes: savedRecipes, drafts: recipeDrafts });
+  JSON.stringify({ schemaVersion: 3, projects, recipes: savedRecipes, drafts: recipeDrafts });
 const esc = (value) =>
   String(value).replace(
     /[&<>"']/g,
@@ -36,7 +47,11 @@ function persistSnapshot(value) {
     storageConflict = true;
     throw new Error("Data changed in another tab");
   }
-  if (value !== lastStored) localStorage.setItem(storageKey, value);
+  if (value !== lastStored) {
+    if (lastStored && !JSON.parse(lastStored).schemaVersion && !localStorage.getItem(storageKey + "-before-v3"))
+      localStorage.setItem(storageKey + "-before-v3", lastStored);
+    localStorage.setItem(storageKey, value);
+  }
   lastStored = value;
   storageConflict = false;
 }
@@ -106,11 +121,7 @@ function home() {
   if (recipesTab) {
     document.querySelector("#new-recipe").onclick = () => startRecipe();
     document.querySelector("#library-results").onclick = e => { if(e.target.closest("#new-recipe-card")) startRecipe(); };
-    document.querySelector("#recipe-tag-search").oninput = (e) => {
-      document.querySelector("#library-results").innerHTML = libraryCards(
-        e.target.value,
-      );
-    };
+    bindLibrarySearch();
   } else {
     document.querySelector("#new-project").onclick = createProject;
     list.forEach((p) => {
@@ -351,6 +362,7 @@ function drawCourses() {
   });
 }
 function render() {
+  disposeRecipeBindings();
   const recipePath = location.pathname.match(
     /^\/recipe\/(?:new|edit)\/([a-zA-Z0-9-]+)\/?$/,
   );
@@ -449,6 +461,7 @@ function allDishes() {
   );
 }
 function setTab(tab, persist = true) {
+  disposeRecipeBindings();
   project.activeTab = ["recipes", "ingredients", "timeline"].includes(tab)
     ? tab
     : "planner";
@@ -472,7 +485,20 @@ function navigate(path) {
   window.scrollTo(0, 0);
 }
 function recipeMeta(r) {
-  return `Serves ${esc(r.servings)} · ${r.steps.reduce((sum, s) => sum + Number(s.minutes), 0)} min total steps`;
+  return `${recipeYield(r)} · ${r.steps.some(s => s.minutes == null || String(s.minutes).trim() === "") ? "Needs timing review" : `${r.steps.reduce((sum, s) => sum + Number(s.minutes), 0)} min total steps`}`;
+}
+function recipeYield(r) {
+  return r.servings == null || String(r.servings).trim() === "" ? esc(r.importMetadata?.yield?.raw || "Yield not supplied") : `Serves ${esc(r.servings)}`;
+}
+function recipeSource(r) {
+  const source = r.importMetadata?.source;
+  const value = source?.url || r.sourceUrl;
+  if (!value) return "";
+  let url;
+  try { url = new URL(value); } catch { return ""; }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return "";
+  const credit = [source?.author, source?.publisher || url.hostname].filter(Boolean).join(" · ");
+  return `<p class="recipe-source">From <a href="${esc(url.href)}" target="_blank" rel="noopener noreferrer">${esc(credit)}</a>${r.importMetadata?.yield?.raw ? ` · ${esc(r.importMetadata.yield.raw)}` : ""}</p>`;
 }
 function knownTags() {
   return [
@@ -485,23 +511,79 @@ function knownTags() {
 }
 function libraryMarkup() {
   return (
-    '<h2>Saved recipes</h2><label class="tag-search">Search by tag<input id="recipe-tag-search" type="search" placeholder="e.g. Vegetarian" list="library-tags"></label><datalist id="library-tags">' +
-    knownTags()
-      .map((t) => '<option value="' + esc(t) + '"></option>')
-      .join("") +
-    '</datalist><div id="library-results" aria-live="polite">' +
+    "<h2>Saved recipes</h2>" +
+    recipeSearchMarkup({
+      placeholder: "Search for a dish, or paste a link",
+    }) +
+    '<div id="library-results" aria-live="polite">' +
     libraryCards("") +
     "</div>"
   );
 }
 function libraryCards(query) {
-  const tag=query.trim().toLowerCase();
-  const recipes=Object.values(savedRecipes).filter(r=>!tag||r.tags.some(t=>t.toLowerCase().includes(tag)));
-  const empty=!recipes.length?'<div class="empty"><h3>'+(tag?'No recipes match this tag.':'Your recipes, all in one place.')+'</h3><p>'+(tag?'Try another tag or clear your search.':'Create a recipe to start your collection.')+'</p></div>':'';
-  return empty+'<div class="project-grid saved-recipe-grid">'+recipes.map(r=>{
-    const minutes=Number(r.steps.reduce((sum,step)=>sum+Number(step.minutes),0).toFixed(2));
-    return '<a class="project-card" href="/recipe/edit/'+r.id+'"><span class="recipe-card-meta">Serves '+esc(r.servings)+', '+minutes+' min across '+r.steps.length+' steps</span><h3>'+esc(r.title)+'</h3><div class="tags recipe-card-tags" title="'+esc(r.tags.join(', '))+'">'+r.tags.map(t=>'<span class="tag">'+esc(t)+'</span>').join('')+'</div></a>';
-  }).join('')+'<button type="button" class="project-card new-recipe-card" id="new-recipe-card"><span aria-hidden="true">＋</span><span>New recipe</span></button></div>';
+  const recipes = matchSavedRecipes(savedRecipes, query);
+  const looking = query.trim();
+  const empty = !recipes.length
+    ? '<div class="empty"><h3>' +
+      (looking
+        ? "No recipes match this search."
+        : "Your recipes, all in one place.") +
+      "</h3><p>" +
+      (looking
+        ? "Try another search, paste a link, or create a recipe."
+        : "Create a recipe to start your collection.") +
+      "</p></div>"
+    : "";
+  return (
+    empty +
+    '<div class="project-grid saved-recipe-grid">' +
+    recipes
+      .map((r) => {
+        const minutes = Number(
+          r.steps.reduce((sum, step) => sum + Number(step.minutes), 0).toFixed(2),
+        );
+        return (
+          '<a class="project-card" href="/recipe/edit/' +
+          r.id +
+          '"><span class="recipe-card-meta">Serves ' +
+          esc(r.servings) +
+          ", " +
+          (r.steps.some(s => s.minutes == null || String(s.minutes).trim() === "") ? "Needs timing review · " : minutes + " min across ") +
+          r.steps.length +
+          " steps</span><h3>" +
+          esc(r.title) +
+          '</h3><div class="tags recipe-card-tags" title="' +
+          esc(r.tags.join(", ")) +
+          '">' +
+          r.tags.map((t) => '<span class="tag">' + esc(t) + "</span>").join("") +
+          "</div></a>"
+        );
+      })
+      .join("") +
+    '<button type="button" class="project-card new-recipe-card" id="new-recipe-card"><span aria-hidden="true">＋</span><span>New recipe</span></button></div>'
+  );
+}
+function bindLibrarySearch() {
+  recipeBindings.push(bindRecipeSearch({
+    input: document.querySelector("#recipe-search"),
+    listbox: document.querySelector("#recipe-search-list"),
+    status: document.querySelector("#recipe-search-status"),
+    getSaved: () => savedRecipes,
+    onQuery: (query) => {
+      document.querySelector("#library-results").innerHTML = libraryCards(query);
+    },
+    onSelectSaved: (recipe) => navigate("/recipe/edit/" + recipe.id),
+    onSelectOnline: (result) => openImportedRecipe(result),
+  }));
+}
+function openImportedRecipe(result, context) {
+  startRecipe({
+    ...context,
+    title: result.title || context?.title || "",
+    importPendingUrl: result.url,
+    importPendingRecipeId: result.recipeId,
+    importNotice: "Importing…",
+  });
 }
 function startRecipe(context) {
   const id = crypto.randomUUID();
@@ -512,14 +594,24 @@ function startRecipe(context) {
     tags: [],
     ingredients: [""],
     steps: [{ text: "", minutes: "" }],
-    returnTo: context
-      ? { projectId: context.projectId, dishId: context.dishId }
-      : null,
+    ...(context?.importPendingUrl
+      ? {
+          importPendingUrl: context.importPendingUrl,
+          sourceUrl: context.importPendingUrl,
+        }
+      : {}),
+    ...(context?.importNotice ? { importNotice: context.importNotice } : {}),
+    ...(context?.importPendingRecipeId ? { importPendingRecipeId: context.importPendingRecipeId } : {}),
+    returnTo:
+      context?.projectId && context?.dishId
+        ? { projectId: context.projectId, dishId: context.dishId }
+        : null,
   };
   save();
   navigate("/recipe/new/" + id);
 }
 function showRecipeEditor(id) {
+  disposeRecipeBindings();
   if (!recipeDrafts[id] && savedRecipes[id])
     recipeDrafts[id] = JSON.parse(JSON.stringify(savedRecipes[id]));
   const d = recipeDrafts[id];
@@ -535,7 +627,7 @@ function showRecipeEditor(id) {
     d.returnTo && projects[d.returnTo.projectId]
       ? "/project/" + d.returnTo.projectId
       : "/recipes";
-  app.innerHTML = `<header class="topbar"><a class="brand" href="/">Mise Studio<span class="period">.</span></a><span id="save-status" role="status">Recipe draft</span></header><main class="workspace recipe-editor"><a class="back" href="${back}">← ${d.returnTo ? "Back to project" : "Saved recipes"}</a><div class="page-heading recipe-title-row"><div><div class="eyebrow">YOUR RECIPE</div><h1>${savedRecipes[id] ? "Edit recipe" : "Create a recipe"}<span class="period">.</span></h1></div><button class="primary save-button" type="submit" form="recipe-form">Save recipe</button></div><form id="recipe-form"><p id="recipe-error" role="alert"></p><section class="parameters"><label class="name-field">Recipe name<input id="recipe-title" maxlength="160" required value="${esc(d.title)}" placeholder="e.g. Japanese potato salad"></label><label>Serves<input id="recipe-servings" type="number" min="1" max="999" step="1" required value="${esc(d.servings)}"></label></section><section class="recipe-section"><h2>Tags</h2><div class="tags">${d.tags.map((t, i) => `<button type="button" class="tag" id="tag-${i}" aria-label="Remove tag ${esc(t)}">${esc(t)} ×</button>`).join("")}</div><div class="entry-row"><label class="grow">Add your own tags<input id="tag-input" maxlength="60" placeholder="e.g. Weeknight, Vegetarian" autocomplete="off" aria-controls="tag-suggestions"></label><button type="button" class="secondary" id="add-tag">Add tag</button></div><div id="tag-suggestions" class="tag-suggestions" aria-label="Matching existing tags"></div></section><section class="recipe-section"><div class="section-heading"><h2>Ingredients</h2></div><p>Enter one ingredient per line. Quantities are optional.</p>${d.ingredients.map((name, i) => `<div class="entry-row ingredient-input-row"><label class="grow">Ingredient ${i + 1}<input id="ingredient-${i}" maxlength="300" value="${esc(name)}" placeholder="e.g. Tomatoes"></label><label class="quantity-field">Quantity<input id="quantity-${i}" maxlength="100" value="${esc(d.ingredientQuantities[i] || "")}" placeholder="e.g. 2 tbsp" aria-label="Quantity for ingredient ${i + 1}"></label><button type="button" class="icon-button" id="remove-ingredient-${i}" aria-label="Remove ingredient ${i + 1}">×</button></div>`).join("")}<button type="button" class="secondary" id="add-ingredient">＋ Add ingredient</button></section><section class="recipe-section"><h2>Steps</h2><p>Drag the handles to rearrange steps.</p><div id="step-order-status" class="sr-only" role="status"></div>${d.steps.map((s, i) => `<div class="step-row" id="step-row-${i}"><button type="button" class="step-grip" id="step-grip-${i}" aria-label="Reorder step ${i + 1}" title="Drag to reorder; Alt + arrow keys to move" ${d.steps.length < 2 ? "disabled" : ""}>⠿</button><label class="grow">Step ${i + 1}<textarea id="step-${i}" rows="3" maxlength="4000" placeholder="Describe this step">${esc(s.text)}</textarea></label><label class="duration-field">Duration (minutes)<input id="minutes-${i}" type="number" min="0" step="any" value="${esc(s.minutes)}" placeholder="10"></label><button type="button" class="icon-button" id="remove-step-${i}" aria-label="Remove step ${i + 1}">×</button></div>`).join("")}<button type="button" class="secondary" id="add-step">＋ Add step</button></section></form></main>`;
+  app.innerHTML = `<header class="topbar"><a class="brand" href="/">Mise Studio<span class="period">.</span></a><span id="save-status" role="status">Recipe draft</span></header><main class="workspace recipe-editor"><a class="back" href="${back}">← ${d.returnTo ? "Back to project" : "Saved recipes"}</a><div class="page-heading recipe-title-row"><div><div class="eyebrow">YOUR RECIPE</div><h1>${savedRecipes[id] ? "Edit recipe" : "Create a recipe"}<span class="period">.</span></h1></div><button class="primary save-button" type="submit" form="recipe-form">Save recipe</button></div>${recipeSource(d)}<form id="recipe-form"><p id="recipe-error" role="alert"></p><section class="recipe-section recipe-import" aria-label="Import a recipe"><h2>Find a recipe</h2><p>Search for a dish, paste a link, or paste labelled recipe text. Review ingredients, steps, and times before saving. Unknown times stay blank.</p>${recipeSearchMarkup({ id: "import-search", listId: "import-search-list", statusId: "import-search-status", placeholder: "e.g. cucumber salad, or paste https://" })}<input id="import-url" type="url" hidden maxlength="4096" autocomplete="off"><button type="button" id="import-from-url" hidden>Import URL</button><label class="grow">Or paste a recipe<textarea id="import-text" rows="6" maxlength="100000" placeholder="Title&#10;&#10;Ingredients&#10;- 1 item&#10;&#10;Instructions&#10;1. Cook."></textarea></label><button type="button" class="secondary" id="import-from-text">Import pasted text</button><p id="import-status" class="recipe-import-status" role="status">${d.importNotice ? esc(d.importNotice) : ""}</p><div id="import-choices" class="import-choices"></div></section><section class="parameters"><label class="name-field">Recipe name<input id="recipe-title" maxlength="160" required value="${esc(d.title)}" placeholder="e.g. Japanese potato salad"></label><label>Serves<input id="recipe-servings" type="number" min="1" max="999" step="1" value="${esc(d.servings ?? "")}"></label></section><section class="recipe-section"><h2>Tags</h2><div class="tags">${d.tags.map((t, i) => `<button type="button" class="tag" id="tag-${i}" aria-label="Remove tag ${esc(t)}">${esc(t)} ×</button>`).join("")}</div><div class="entry-row"><label class="grow">Add your own tags<input id="tag-input" maxlength="60" placeholder="e.g. Weeknight, Vegetarian" autocomplete="off" aria-controls="tag-suggestions"></label><button type="button" class="secondary" id="add-tag">Add tag</button></div><div id="tag-suggestions" class="tag-suggestions" aria-label="Matching existing tags"></div></section><section class="recipe-section"><div class="section-heading"><h2>Ingredients</h2></div><p>Enter one ingredient per line. Quantities are optional.</p>${d.ingredients.map((name, i) => `<div class="entry-row ingredient-input-row"><label class="grow">Ingredient ${i + 1}<input id="ingredient-${i}" maxlength="300" value="${esc(name)}" placeholder="e.g. Tomatoes"></label><label class="quantity-field">Quantity<input id="quantity-${i}" maxlength="100" value="${esc(d.ingredientQuantities[i] || "")}" placeholder="e.g. 2 tbsp" aria-label="Quantity for ingredient ${i + 1}"></label><button type="button" class="icon-button" id="remove-ingredient-${i}" aria-label="Remove ingredient ${i + 1}">×</button></div>`).join("")}<button type="button" class="secondary" id="add-ingredient">＋ Add ingredient</button></section><section class="recipe-section"><h2>Steps</h2><p>Drag the handles to rearrange steps.</p><div id="step-order-status" class="sr-only" role="status"></div>${d.steps.map((s, i) => `<div class="step-row" id="step-row-${i}"><button type="button" class="step-grip" id="step-grip-${i}" aria-label="Reorder step ${i + 1}" title="Drag to reorder; Alt + arrow keys to move" ${d.steps.length < 2 ? "disabled" : ""}>⠿</button><label class="grow">Step ${i + 1}<textarea id="step-${i}" rows="3" maxlength="4000" placeholder="Describe this step">${esc(s.text)}</textarea></label><label class="duration-field">Duration (minutes)<input id="minutes-${i}" type="number" min="0" step="any" value="${esc(s.minutes ?? "")}" placeholder="10"></label><button type="button" class="icon-button" id="remove-step-${i}" aria-label="Remove step ${i + 1}">×</button></div>`).join("")}<button type="button" class="secondary" id="add-step">＋ Add step</button></section></form></main>`;
   const field = (selector, fn) =>
     (document.querySelector(selector).oninput = (e) => {
       fn(e.target.value);
@@ -548,6 +640,23 @@ function showRecipeEditor(id) {
     showRecipeEditor(id);
     if (focus) document.querySelector(focus)?.focus();
   };
+  const importer = bindRecipeImport(d, redraw);
+  recipeBindings.push(importer);
+  recipeBindings.push(bindRecipeSearch({
+    input: document.querySelector("#import-search"),
+    listbox: document.querySelector("#import-search-list"),
+    status: document.querySelector("#import-search-status"),
+    includeSaved: false,
+    onSelectOnline: (result) => importer?.run(result.recipeId ? { recipeId: result.recipeId } : { url: result.url }),
+  }));
+  if ((d.importPendingUrl || d.importPendingRecipeId) && importer) {
+    const url = d.importPendingUrl;
+    const recipeId = d.importPendingRecipeId;
+    delete d.importPendingUrl;
+    delete d.importPendingRecipeId;
+    save();
+    importer.run(recipeId ? { recipeId } : { url });
+  }
   const addTags = () => {
     const input = document.querySelector("#tag-input");
     input.value
@@ -673,7 +782,7 @@ function showRecipeEditor(id) {
   };
   d.steps.forEach((s, i) => {
     field("#step-" + i, (v) => (s.text = v));
-    field("#minutes-" + i, (v) => (s.minutes = v));
+    field("#minutes-" + i, (v) => { s.minutes = v; s.durationSource = v.trim() === "" ? "unknown" : "user"; });
     document.querySelector("#remove-step-" + i).onclick = () => {
       d.steps.splice(i, 1);
       redraw("#add-step");
@@ -754,9 +863,8 @@ function commitRecipe(id) {
     ingredients = d.ingredients.map((x) => x.trim()).filter(Boolean);
   const error = !d.title.trim()
     ? "Give your recipe a name."
-    : !Number.isInteger(Number(d.servings)) ||
-        Number(d.servings) < 1 ||
-        Number(d.servings) > 999
+    : d.servings != null && String(d.servings).trim() !== "" &&
+        (!Number.isInteger(Number(d.servings)) || Number(d.servings) < 1 || Number(d.servings) > 999)
       ? "Enter a serving count between 1 and 999."
       : !ingredients.length
         ? "Add at least one ingredient."
@@ -764,11 +872,10 @@ function commitRecipe(id) {
             d.steps.some(
               (s) =>
                 !s.text.trim() ||
-                String(s.minutes).trim() === "" ||
-                !Number.isFinite(Number(s.minutes)) ||
-                Number(s.minutes) < 0,
+                (s.minutes != null && String(s.minutes).trim() !== "" &&
+                  (!Number.isFinite(Number(s.minutes)) || Number(s.minutes) < 0)),
             )
-          ? "Add instructions and a duration of zero or more minutes for every step."
+          ? "Add instructions for every step. Durations, when supplied, must be zero or more minutes."
           : "";
   if (error) {
     document.querySelector("#recipe-error").textContent = error;
@@ -778,8 +885,9 @@ function commitRecipe(id) {
   savedRecipes[id] = {
     id,
     ...(d.sourceUrl ? { sourceUrl: d.sourceUrl } : {}),
+    ...Object.fromEntries(["importMetadata", "ingredientMetadata"].filter(key => d[key] !== undefined).map(key => [key, JSON.parse(JSON.stringify(d[key]))])),
     title: d.title.trim(),
-    servings: Number(d.servings),
+    servings: d.servings == null || String(d.servings).trim() === "" ? null : Number(d.servings),
     tags: [...d.tags],
     ingredients,
     ingredientQuantities: d.ingredients
@@ -790,8 +898,9 @@ function commitRecipe(id) {
       .filter((x) => x.name)
       .map((x) => x.quantity),
     steps: d.steps.map((s) => ({
+      ...s,
       text: s.text.trim(),
-      minutes: Number(s.minutes),
+      minutes: s.minutes == null || String(s.minutes).trim() === "" ? null : Number(s.minutes),
     })),
     updatedAt: new Date().toISOString(),
   };
@@ -848,6 +957,7 @@ function chooseRecipe(dishId, recipeId) {
   drawRecipes();
 }
 function drawRecipes() {
+  disposeRecipeBindings();
   const dishes = allDishes(),
     panel = document.querySelector("#recipes-panel");
   if (!dishes.length) {
@@ -865,12 +975,18 @@ function drawRecipes() {
       ? `<p class="eyebrow">${esc(current.courseName)}</p>${attachedRecipe(current.dish) ? `<p class="selected-notice">Attached: <strong>${esc(attachedRecipe(current.dish).title)}</strong></p>` : current.dish.recipe ? "<p>Choose a saved recipe to replace the previous online recipe.</p>" : ""}${current.dish.recipe ? '<button class="secondary" id="unattach-recipe">Unattach recipe</button>' : ""}${
           attachedRecipe(current.dish)
             ? attachedRecipeMarkup(attachedRecipe(current.dish))
-            : `<div class="section-heading"><h3>Choose a saved recipe</h3><button class="primary" id="create-for-dish">＋ Create new recipe</button></div>${
+            : `<div class="section-heading"><h3>Find a recipe</h3><button class="primary" id="create-for-dish">＋ Create new recipe</button></div>${recipeSearchMarkup({
+                    id: "dish-recipe-search",
+                    listId: "dish-recipe-search-list",
+                    statusId: "dish-recipe-search-status",
+                    value: current.dish.name || "",
+                    placeholder: "Search for a dish, or paste a link",
+                  })}${
                 Object.values(savedRecipes).length
                   ? `<div class="project-grid">${Object.values(savedRecipes)
                       .map(
                         (r, i) =>
-                          `<article class="custom-recipe-card"><h3>${esc(r.title)}</h3><p>${recipeMeta(r)}</p><div class="tags">${r.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div><details><summary>View recipe</summary><ul>${r.ingredients.map((x, i) => `<li>${esc([r.ingredientQuantities?.[i], x].filter(Boolean).join(" "))}</li>`).join("")}</ul><ol>${r.steps.map((s) => `<li>${esc(s.text)} <small>(${s.minutes} min)</small></li>`).join("")}</ol></details><button class="secondary" id="attach-${i}">Attach recipe</button></article>`,
+                          `<article class="custom-recipe-card"><h3>${esc(r.title)}</h3><p>${recipeMeta(r)}</p><div class="tags">${r.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div><details><summary>View recipe</summary><ul>${r.ingredients.map((x, i) => `<li>${esc([r.ingredientQuantities?.[i], x].filter(Boolean).join(" "))}</li>`).join("")}</ul><ol>${r.steps.map((s) => `<li>${esc(s.text)} <small>(${s.minutes == null ? "Needs timing review" : `${s.minutes} min`})</small></li>`).join("")}</ol></details><button class="secondary" id="attach-${i}">Attach recipe</button></article>`,
                       )
                       .join("")}</div>`
                   : '<div class="empty"><p>No saved recipes yet. Create one for this dish.</p></div>'
@@ -902,6 +1018,19 @@ function drawRecipes() {
           dishId: current.dish.id,
           title: current.dish.name,
         });
+      recipeBindings.push(bindRecipeSearch({
+        input: document.querySelector("#dish-recipe-search"),
+        listbox: document.querySelector("#dish-recipe-search-list"),
+        status: document.querySelector("#dish-recipe-search-status"),
+        getSaved: () => savedRecipes,
+        onSelectSaved: (recipe) => chooseRecipe(current.dish.id, recipe.id),
+        onSelectOnline: (result) =>
+          openImportedRecipe(result, {
+            projectId: project.id,
+            dishId: current.dish.id,
+            title: current.dish.name,
+          }),
+      }));
       Object.values(savedRecipes).forEach(
         (r, i) =>
           (document.querySelector("#attach-" + i).onclick = () =>
@@ -1049,7 +1178,7 @@ function drawIngredients() {
 }
 
 function attachedRecipeMarkup(recipe) {
-  return `<article class="custom-recipe-card attached-recipe" aria-label="Attached recipe"><p>${recipeMeta(recipe)}</p><div class="tags">${recipe.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div><h3>Ingredients</h3><ul>${recipe.ingredients.map((name, i) => `<li>${esc([recipe.ingredientQuantities?.[i], name].filter(Boolean).join(" "))}</li>`).join("")}</ul><h3>Steps</h3><ol>${recipe.steps.map((step) => `<li>${esc(step.text)} <small>(${step.minutes} min)</small></li>`).join("")}</ol></article>`;
+  return `<article class="custom-recipe-card attached-recipe" aria-label="Attached recipe"><p>${recipeMeta(recipe)}</p>${recipeSource(recipe)}<div class="tags">${recipe.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div><h3>Ingredients</h3><ul>${recipe.ingredients.map((name, i) => `<li>${esc([recipe.ingredientQuantities?.[i], name].filter(Boolean).join(" "))}</li>`).join("")}</ul><h3>Steps</h3><ol>${recipe.steps.map((step) => `<li>${esc(step.text)} <small>(${step.minutes == null ? "Needs timing review" : `${step.minutes} min`})</small></li>`).join("")}</ol></article>`;
 }
 
 function shiftTimeline(dishId, index, delta) {

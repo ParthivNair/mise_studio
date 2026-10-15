@@ -823,7 +823,8 @@ importer.run(
   `applyImportedRecipe(recipeDrafts['import-draft'], {title:'Imported soup', yield:{raw:'4 servings',servings:4}, ingredients:[{raw:'1 onion'}], steps:[{text:'Simmer gently.', minutes:null}], source:{url:'https://recipes.example.com/soup'}});`,
 );
 assert.equal(importer.run(`recipeDrafts['import-draft'].title`), "Imported soup");
-assert.equal(importer.run(`recipeDrafts['import-draft'].ingredients[0]`), "1 onion");
+assert.equal(importer.run(`recipeDrafts['import-draft'].ingredients[0]`), "onion");
+assert.equal(importer.run(`recipeDrafts['import-draft'].ingredientQuantities[0]`), "1");
 assert.equal(importer.run(`recipeDrafts['import-draft'].steps[0].minutes`), "");
 assert.equal(
   importer.run(`recipeDrafts['import-draft'].sourceUrl`),
@@ -954,7 +955,11 @@ assert.equal(
 );
 assert.equal(
   finder.run(`recipeDrafts['${importedId}'].ingredients[0]`),
-  "8 oz rice noodles",
+  "rice noodles",
+);
+assert.equal(
+  finder.run(`recipeDrafts['${importedId}'].ingredientQuantities[0]`),
+  "8 oz",
 );
 assert.equal(finder.run(`recipeDrafts['${importedId}'].steps.length`), 2);
 assert.equal(

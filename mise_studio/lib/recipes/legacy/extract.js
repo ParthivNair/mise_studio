@@ -168,6 +168,53 @@ function timing(text) {
   return suggestions.length ? { timingEvidence: expressions.join('; '), timingSuggestions: suggestions } : {};
 }
 
+function explicitStepMinutes(text) {
+  const source = String(text || '');
+  const pattern = /(\d+(?:\.\d+)?)(?:\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?))?\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/gi;
+  const spans = [];
+  for (const match of source.matchAll(pattern)) {
+    const factor = /^s/i.test(match[3]) ? 1 / 60 : /^h/i.test(match[3]) ? 60 : 1;
+    const value = Number(match[2] ?? match[1]) * factor;
+    if (!(value > 0) || value > 525600) continue;
+    spans.push({ value, start: match.index, end: match.index + match[0].length, hours: /^h/i.test(match[3]) });
+  }
+  if (!spans.length) return null;
+  const merged = [];
+  for (const span of spans) {
+    const previous = merged.at(-1);
+    const between = previous ? source.slice(previous.end, span.start) : '';
+    if (previous?.hours && span.value < 60 && /^\s*$/.test(between)) {
+      previous.value += span.value;
+      previous.end = span.end;
+      previous.hours = false;
+    } else merged.push({ ...span });
+  }
+  const total = Math.round(merged.reduce((sum, span) => sum + span.value, 0) * 10) / 10;
+  return total > 0 ? total : null;
+}
+
+function collectTags(candidate, resolve) {
+  const seen = new Set();
+  const tags = [];
+  for (const field of ['recipeCuisine', 'recipeCategory', 'keywords']) {
+    const value = candidate?.[field];
+    const list = Array.isArray(value) ? value : value == null || value === '' ? [] : [value];
+    for (const item of list) {
+      const resolved = resolve(item, 'tags');
+      const text = plain(isObject(resolved) ? resolved.name || resolved.alternateName : resolved, 200);
+      for (const part of String(text || '').split(/[,;/|]/)) {
+        const tag = plain(part, 60);
+        const key = tag.toLowerCase();
+        if (!tag || seen.has(key)) continue;
+        seen.add(key);
+        tags.push(tag);
+        if (tags.length >= 12) return tags;
+      }
+    }
+  }
+  return tags;
+}
+
 function flattenIngredients(value, resolve, warnings) {
   const result = [];
   let visits = 0;
@@ -209,9 +256,9 @@ function flattenIngredients(value, resolve, warnings) {
 function flattenSteps(value, resolve, warnings) {
   const result = [];
   let visits = 0;
-  function add(text, section) {
+  function add(text, section, performTime) {
     if (!text) return;
-    result.push({ text, ...(section ? { section } : {}) });
+    result.push({ text, ...(section ? { section } : {}), ...(performTime ? { performTime } : {}) });
     if (result.length > LIMITS.steps) limit('The recipe contains too many instruction steps.');
   }
   function visit(input, section, depth, path) {
@@ -243,7 +290,8 @@ function flattenSteps(value, resolve, warnings) {
       if (typeof children === 'string') add(plain(children), section);
       else visit(children, section, depth + 1, next);
     } else if (node.text || node.name) {
-      for (const text of stringSteps(String(node.text || node.name))) add(text, section);
+      const texts = stringSteps(String(node.text || node.name));
+      texts.forEach((text, index) => add(text, section, index === 0 ? node.performTime || node.totalTime : undefined));
     }
   }
   visit(value, undefined, 0, new Set());
@@ -259,13 +307,18 @@ function normalize(candidate, { url, fetchedAt, extractor, resolve }) {
   const publisher = names(candidate.publisher, resolve, 'source.publisher') || (sourceUrl ? new URL(sourceUrl).hostname : '');
   const author = names(candidate.author, resolve, 'source.author');
   const id = `recipe_${hash(JSON.stringify([sourceUrl || null, title, ingredients, rawSteps]))}`;
-  const steps = rawSteps.map((item, index) => ({
-    id: `step_${hash(JSON.stringify([id, index, item]))}`,
-    ...item,
-    minutes: null,
-    durationSource: 'unknown',
-    ...timing(item.text),
-  }));
+  const steps = rawSteps.map((item, index) => {
+    const noted = timing(item.text);
+    const performed = item.performTime == null ? null : duration(item.performTime, 'steps.performTime', warnings);
+    const minutes = performed ?? explicitStepMinutes(item.text);
+    return {
+      id: `step_${hash(JSON.stringify([id, index, item]))}`,
+      ...item,
+      minutes,
+      durationSource: minutes == null ? 'unknown' : 'explicit',
+      ...noted,
+    };
+  });
   for (const [field, exists] of [['title', title], ['ingredients', ingredients.length], ['steps', steps.length]]) {
     if (!exists) addWarning(warnings, warning(field, 'missing_field', `The source did not provide ${field}.`));
   }
@@ -274,6 +327,7 @@ function normalize(candidate, { url, fetchedAt, extractor, resolve }) {
     source: { ...(sourceUrl ? { url: sourceUrl } : {}), ...(publisher ? { publisher } : {}), ...(author ? { author } : {}), fetchedAt, extractor, version: VERSION },
     yield: parseYield(candidate.recipeYield, resolve, warnings),
     ingredients, steps,
+    tags: collectTags(candidate, resolve),
     recipeTimes: {
       prepMinutes: duration(candidate.prepTime, 'recipeTimes.prepMinutes', warnings),
       cookMinutes: duration(candidate.cookTime, 'recipeTimes.cookMinutes', warnings),
@@ -303,6 +357,7 @@ function microdataRecipes($) {
       '@type': 'Recipe', name: values('name')[0], recipeIngredient: values('recipeIngredient'), recipeInstructions: values('recipeInstructions', true),
       recipeYield: values('recipeYield'), prepTime: values('prepTime')[0], cookTime: values('cookTime')[0], totalTime: values('totalTime')[0],
       author: values('author'), publisher: values('publisher'),
+      recipeCuisine: values('recipeCuisine'), recipeCategory: values('recipeCategory'), keywords: values('keywords'),
     };
   });
 }

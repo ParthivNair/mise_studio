@@ -7,33 +7,129 @@ const esc = (value) =>
       ],
   );
 
+const AMOUNT = String.raw`(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?|[¼½¾⅓⅔⅛⅜⅝⅞])`;
+const UNIT =
+  String.raw`(?:fluid\s+ounces?|fl\.?\s*oz\.?|tablespoons?|teaspoons?|tbsp\.?|tsp\.?|pounds?|ounces?|cups?|grams?|kilograms?|millilit(?:er|re)s?|lit(?:er|re)s?|cloves?|packages?|pinches?|jars?|cans?|bunches?|sticks?|slices?|heads?|sprigs?|bottles?|boxes|box|bags?|tins?|pieces?|stalks?|leaves?|sheets?|handfuls?|scoops?|quarts?|pints?|gallons?|lbs?\.?|oz\.?|kg|ml|g|l)`;
+const LEADING_AMOUNT = new RegExp(
+  `^(${AMOUNT}(?:\\s*(?:-|–|—|to)\\s*${AMOUNT})?(?:\\s+\\([^)]{1,40}\\))?(?:\\s+${UNIT}\\b)?)\\s+(.+)$`,
+  "iu",
+);
+
+export function splitIngredientLine(raw) {
+  const text = String(raw || "").replace(/\s+/g, " ").trim();
+  const loose = text.match(
+    /^(?:a|an)\s+(?:pinch|handful|dash|splash|bunch|can|jar|package|clove|stick)\b(?:\s+of)?\s+(.+)$/i,
+  );
+  if (loose) {
+    const name = loose[1].trim();
+    return {
+      quantity: text.slice(0, text.length - name.length).trim(),
+      name,
+    };
+  }
+  const match = text.match(LEADING_AMOUNT);
+  if (!match) return { quantity: "", name: text };
+  return {
+    quantity: match[1].replace(/\s+/g, " ").trim(),
+    name: match[2].replace(/^of\s+/i, "").trim(),
+  };
+}
+
+export function minutesFromStepText(text) {
+  const source = String(text || "");
+  const pattern =
+    /(\d+(?:\.\d+)?)(?:\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?))?\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/gi;
+  const spans = [];
+  for (const match of source.matchAll(pattern)) {
+    const factor = /^s/i.test(match[3]) ? 1 / 60 : /^h/i.test(match[3]) ? 60 : 1;
+    const value = Number(match[2] ?? match[1]) * factor;
+    if (!(value > 0) || value > 525600) continue;
+    spans.push({
+      value,
+      start: match.index,
+      end: match.index + match[0].length,
+      hours: /^h/i.test(match[3]),
+    });
+  }
+  if (!spans.length) return null;
+  const merged = [];
+  for (const span of spans) {
+    const previous = merged[merged.length - 1];
+    const between = previous ? source.slice(previous.end, span.start) : "";
+    if (previous?.hours && span.value < 60 && /^\s*$/.test(between)) {
+      previous.value += span.value;
+      previous.end = span.end;
+      previous.hours = false;
+    } else merged.push({ ...span });
+  }
+  const total = Math.round(merged.reduce((sum, span) => sum + span.value, 0) * 10) / 10;
+  return total > 0 ? total : null;
+}
+
+function draftTags(recipe) {
+  const source = Array.isArray(recipe?.tags)
+    ? recipe.tags
+    : typeof recipe?.keywords === "string"
+      ? recipe.keywords.split(/[,;/|]/)
+      : [];
+  const seen = new Set();
+  const tags = [];
+  for (const value of source) {
+    const tag = String(value || "").replace(/\s+/g, " ").trim().slice(0, 60);
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= 12) break;
+  }
+  return tags;
+}
+
+function draftIngredient(item) {
+  if (typeof item === "string") return splitIngredientLine(item);
+  const split = splitIngredientLine(item?.raw || item?.name || "");
+  let name = split.name;
+  const preparation = String(item?.preparation || "").trim();
+  if (preparation && !name.toLowerCase().includes(preparation.toLowerCase()))
+    name = name ? `${name}, ${preparation}` : preparation;
+  return { quantity: split.quantity, name: name || String(item?.name || "").trim() };
+}
+
+function draftMinutes(step) {
+  if (typeof step?.minutes === "number" && Number.isFinite(step.minutes)) return step.minutes;
+  const parsed = minutesFromStepText(step?.text);
+  return parsed == null ? "" : parsed;
+}
+
 export function importedRecipeToDraft(recipe) {
   const servings = recipe.yield?.servings;
   const ingredients = recipe.ingredients?.length ? recipe.ingredients : null;
   const steps = recipe.steps?.length ? recipe.steps : null;
+  const lines = ingredients ? ingredients.map(draftIngredient) : null;
   return {
     title: recipe.title || "",
     servings:
       Number.isInteger(servings) && servings >= 1 && servings <= 999
         ? servings
         : "",
-    ingredients: ingredients ? ingredients.map((item) => item.raw || item.name || "") : [""],
-    ingredientQuantities: ingredients
-      ? ingredients.map(() => "")
+    tags: draftTags(recipe),
+    ingredients: lines ? lines.map((line) => line.name || line.quantity) : [""],
+    ingredientQuantities: lines
+      ? lines.map((line) => (line.name ? line.quantity : ""))
       : [""],
     ingredientMetadata: ingredients ? ingredients.map((item) => ({ ...item })) : [],
     steps: steps
-      ? steps.map((step) => ({
-          text: step.text,
-          minutes:
-            typeof step.minutes === "number" && Number.isFinite(step.minutes)
-              ? step.minutes
-              : "",
-          durationSource: step.durationSource || (step.minutes == null ? "unknown" : "explicit"),
-          evidence: step.evidence ?? null,
-          sourceId: step.id || null,
-          section: step.section ?? null,
-        }))
+      ? steps.map((step) => {
+          const minutes = draftMinutes(step);
+          return {
+            text: step.text,
+            minutes,
+            durationSource: minutes === "" ? "unknown" : step.durationSource || "explicit",
+            evidence: step.evidence ?? null,
+            sourceId: step.id || null,
+            section: step.section ?? null,
+          };
+        })
       : [{ text: "", minutes: "" }],
     sourceUrl: recipe.source?.url || "",
     importMetadata: {
@@ -55,6 +151,7 @@ export function applyImportedRecipe(draft, recipe) {
   const mapped = importedRecipeToDraft(recipe);
   if (mapped.title) draft.title = mapped.title;
   draft.servings = mapped.servings;
+  draft.tags = mapped.tags;
   draft.ingredients = mapped.ingredients;
   draft.ingredientQuantities = mapped.ingredientQuantities;
   draft.steps = mapped.steps;
@@ -1072,7 +1169,7 @@ export function bindRecipeImport(draft, redraw, { request = requestRecipeImport 
   let active;
   let disposed = false;
 
-  const editableFields = ["title", "servings", "ingredients", "ingredientQuantities", "steps", "sourceUrl"];
+  const editableFields = ["title", "servings", "tags", "ingredients", "ingredientQuantities", "steps", "sourceUrl"];
   const snapshot = () => Object.fromEntries(
     editableFields.map((field) => [field, JSON.stringify(draft[field])]),
   );

@@ -225,7 +225,7 @@ export function createRecipeCatalog(options = {}) {
     catch { throw new ApiError(400, 'INVALID_URL', 'A valid HTTP recipe URL is required.'); }
     const sourceKey = `${canonical}#${recipeId || 'default'}`;
     const cachedRecipes = recipeId ? [getRecipe(recipeId)].filter(recipe => recipe?.source?.url === canonical) : cachedByUrl(canonical).map(entry => entry.recipe);
-    if (cachedRecipes.length) {
+    if (cachedRecipes.length && cachedRecipes.every((recipe) => Array.isArray(recipe.tags))) {
       const age = Math.max(...cachedRecipes.map(recipe => now() - Date.parse(recipe.source.fetchedAt)));
       if (age > policy.recipeFreshMs) track(resolutionFlight(sourceKey, canonical, recipeId));
       const status = cachedRecipes.length > 1 ? 'choose_recipe' : cachedRecipes[0].completeness === 'complete' ? 'ready_for_review' : 'partial';

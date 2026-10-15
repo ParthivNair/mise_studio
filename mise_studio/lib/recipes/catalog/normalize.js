@@ -88,6 +88,46 @@ function normalizeMinutes(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+function minutesFromStepText(text) {
+  const source = String(text || '');
+  const pattern = /(\d+(?:\.\d+)?)(?:\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?))?\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/gi;
+  const spans = [];
+  for (const match of source.matchAll(pattern)) {
+    const factor = /^s/i.test(match[3]) ? 1 / 60 : /^h/i.test(match[3]) ? 60 : 1;
+    const value = Number(match[2] ?? match[1]) * factor;
+    if (!(value > 0) || value > 525600) continue;
+    spans.push({ value, start: match.index, end: match.index + match[0].length, hours: /^h/i.test(match[3]) });
+  }
+  if (!spans.length) return null;
+  const merged = [];
+  for (const span of spans) {
+    const previous = merged.at(-1);
+    const between = previous ? source.slice(previous.end, span.start) : '';
+    if (previous?.hours && span.value < 60 && /^\s*$/.test(between)) {
+      previous.value += span.value;
+      previous.end = span.end;
+      previous.hours = false;
+    } else merged.push({ ...span });
+  }
+  const total = Math.round(merged.reduce((sum, span) => sum + span.value, 0) * 10) / 10;
+  return total > 0 ? total : null;
+}
+
+function normalizeTags(value) {
+  const list = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const tags = [];
+  for (const item of list) {
+    const tag = cleanText(item).slice(0, 60);
+    const key = tag.toLocaleLowerCase('en-US');
+    if (!tag || seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= 12) break;
+  }
+  return tags;
+}
+
 export function normalizeExtractedRecipe(input, { sourceUrl, recipeNodeId = '0', fetchedAt = new Date().toISOString() } = {}) {
   const canonicalUrl = sourceUrl ? canonicalizeSourceUrl(sourceUrl) : null;
   const nodeIdentity = cleanText(input?.source?.nodeId || input?.source?.recipeNodeId || recipeNodeId) || '0';
@@ -96,7 +136,8 @@ export function normalizeExtractedRecipe(input, { sourceUrl, recipeNodeId = '0',
   const ingredients = (Array.isArray(input?.ingredients) ? input.ingredients : []).map((item, index) => normalizeIngredient(item, recipeId, index)).filter(item => item.raw);
   const steps = (Array.isArray(input?.steps) ? input.steps : []).map((item, index) => {
     const text = cleanText(typeof item === 'string' ? item : item?.text);
-    const minutes = normalizeMinutes(item?.minutes);
+    const stated = normalizeMinutes(item?.minutes);
+    const minutes = stated ?? minutesFromStepText(text);
     return {
       id: `step-${hash(`${recipeId}:${index}:${text}`)}`,
       text,
@@ -118,7 +159,7 @@ export function normalizeExtractedRecipe(input, { sourceUrl, recipeNodeId = '0',
   const body = {
     title,
     yield: { raw: cleanText(input?.yield?.raw), servings: normalizeMinutes(input?.yield?.servings) },
-    ingredients, steps,
+    ingredients, steps, tags: normalizeTags(input?.tags),
     times: {
       prep: normalizeMinutes(times.prep ?? legacyTimes.prepMinutes),
       cook: normalizeMinutes(times.cook ?? legacyTimes.cookMinutes),
@@ -155,6 +196,7 @@ export function toLegacyRecipe(recipe) {
     yield: recipe.yield,
     ingredients: recipe.ingredients,
     steps: recipe.steps,
+    tags: recipe.tags || [],
     times: recipe.times,
     recipeTimes: { prepMinutes: recipe.times.prep, cookMinutes: recipe.times.cook, totalMinutes: recipe.times.total },
     warnings: recipe.warnings,

@@ -35,7 +35,8 @@ const revision = {
   warnings: [{ field: "times.cook", code: "MISSING", message: "Cook time missing" }],
 };
 const mapped = importedRecipeToDraft(revision);
-assert.equal(mapped.ingredientQuantities[0], "", "raw ingredient text is not duplicated into the quantity field");
+assert.equal(mapped.ingredients[0], "tofu, cubed", "the quantity is removed and the preparation stays with the ingredient");
+assert.equal(mapped.ingredientQuantities[0], "450 g", "the leading amount and unit fill the quantity field");
 assert.equal(mapped.steps[0].minutes, 0, "an explicit zero duration is preserved");
 assert.equal(mapped.steps[1].minutes, "", "an unknown duration stays blank");
 assert.equal(mapped.importMetadata.recipeId, "recipe-1");
@@ -57,6 +58,30 @@ const sectioned = importedRecipeToDraft({
 });
 assert.equal(sectioned.steps[0].text, "Stir.", "section labels are not duplicated into editable text");
 assert.equal(sectioned.steps[0].section, "Sauce");
+const separated = importedRecipeToDraft({
+  title: "Jerk chicken",
+  tags: ["Jamaican", "Chicken", "jamaican"],
+  ingredients: [
+    { raw: "2 pounds Chicken Legs or Thighs, (bone-in, skin-on)" },
+    { raw: "1 jar Jerk sauce (store-bought)" },
+    { raw: "Salt, to taste" },
+  ],
+  steps: [
+    { text: "Marinate for 4 hours.", minutes: null },
+    { text: "Grill for 25 minutes.", minutes: null },
+    { text: "Serve hot.", minutes: null },
+  ],
+});
+assert.deepEqual(separated.tags, ["Jamaican", "Chicken"]);
+assert.equal(separated.ingredientQuantities[0], "2 pounds");
+assert.equal(separated.ingredients[0], "Chicken Legs or Thighs, (bone-in, skin-on)");
+assert.equal(separated.ingredientQuantities[1], "1 jar");
+assert.equal(separated.ingredients[1], "Jerk sauce (store-bought)");
+assert.equal(separated.ingredientQuantities[2], "");
+assert.equal(separated.ingredients[2], "Salt, to taste");
+assert.equal(separated.steps[0].minutes, 240);
+assert.equal(separated.steps[1].minutes, 25);
+assert.equal(separated.steps[2].minutes, "");
 
 {
   const input = element("search-a");
@@ -591,7 +616,8 @@ const optionTitles = (html) =>
   resolveImport({ status: "ready_for_review", warnings: [], recipes: [revision] });
   await running;
   assert.equal(draft.title, "My edited title", "a late import preserves an edited field");
-  assert.deepEqual(draft.ingredients, ["450 g tofu"], "unchanged fields still populate");
+  assert.deepEqual(draft.ingredients, ["tofu, cubed"], "unchanged fields still populate");
+  assert.deepEqual(draft.ingredientQuantities, ["450 g"], "the quantity is split into its own field");
   assert.match(nodes["#import-choices"].innerHTML, /Use imported title/);
   assert.equal(typeof generated.get("#import-field-0").onclick, "function");
   generated.get("#import-field-0").onclick();

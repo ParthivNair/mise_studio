@@ -6,8 +6,8 @@ const url = 'https://recipes.example.test/recipes/test-bake';
 const page = data => `<html><head><script type="application/ld+json">${JSON.stringify(data).replace(/<\/script/gi, '<\\/script')}</script></head></html>`;
 const base = overrides => ({ '@type': 'Recipe', name: 'Test bake', recipeYield: '4 servings', recipeIngredient: ['1 cup test flour'], recipeInstructions: ['Mix the test ingredients.'], ...overrides });
 
-test('imports JSON-LD metadata, HTML entities, explicit servings and ISO times without inventing step duration', () => {
-  const result = extractRecipes({ html: page(base({ name: 'Test &amp; bake', author: [{ '@type': 'Person', name: 'Test Author' }], prepTime: 'PT10M', cookTime: 'PT1H30M', totalTime: 'P1DT5M', recipeIngredient: ['1&nbsp;cup test flour'], recipeInstructions: [{ '@type': 'HowToStep', text: 'Bake for 10–15 minutes, then rest 30 seconds.' }] })), url });
+test('imports JSON-LD metadata, HTML entities, explicit servings, tags and stated step durations', () => {
+  const result = extractRecipes({ html: page(base({ name: 'Test &amp; bake', author: [{ '@type': 'Person', name: 'Test Author' }], prepTime: 'PT10M', cookTime: 'PT1H30M', totalTime: 'P1DT5M', recipeCuisine: 'Jamaican', recipeCategory: ['Main course'], keywords: 'jerk, Jamaican', recipeIngredient: ['1&nbsp;cup test flour'], recipeInstructions: [{ '@type': 'HowToStep', text: 'Bake for 10–15 minutes, then rest 30 seconds.' }] })), url });
   assert.equal(result.status, 'ready_for_review');
   const recipe = result.recipes[0];
   assert.equal(recipe.title, 'Test & bake');
@@ -15,8 +15,9 @@ test('imports JSON-LD metadata, HTML entities, explicit servings and ISO times w
   assert.equal(recipe.ingredients[0].raw, '1 cup test flour');
   assert.equal(recipe.yield.servings, 4);
   assert.deepEqual(recipe.recipeTimes, { prepMinutes: 10, cookMinutes: 90, totalMinutes: 1445 });
-  assert.equal(recipe.steps[0].minutes, null);
-  assert.equal(recipe.steps[0].durationSource, 'unknown');
+  assert.deepEqual(recipe.tags, ['Jamaican', 'Main course', 'jerk']);
+  assert.equal(recipe.steps[0].minutes, 15.5);
+  assert.equal(recipe.steps[0].durationSource, 'explicit');
   assert.equal(recipe.steps[0].timingEvidence, '10–15 minutes; 30 seconds');
   assert.deepEqual(recipe.steps[0].timingSuggestions, [{ min: 10, max: 15, unit: 'minutes' }, { min: 0.5, max: 0.5, unit: 'minutes' }]);
 });
@@ -92,12 +93,12 @@ test('missing fields are partial, generic articles and malformed-only pages are 
   }
 });
 
-test('invalid times remain null, and multiple timing expressions never become an automatic schedule', () => {
+test('stated step durations fill the schedule while unstated steps stay blank', () => {
   const recipe = extractRecipes({ html: page(base({ prepTime: 'soon', totalTime: 'P1M', recipeInstructions: ['Rest for 1 hour 30 minutes, then bake for 15 to 20 minutes.', 'Stir until combined.'] })), url }).recipes[0];
   assert.equal(recipe.recipeTimes.prepMinutes, null);
   assert.equal(recipe.recipeTimes.totalMinutes, null);
   assert.equal(recipe.steps[0].timingSuggestions.length, 3);
-  assert.equal(recipe.steps[0].minutes, null);
+  assert.equal(recipe.steps[0].minutes, 110);
   assert.equal(recipe.steps[1].minutes, null);
   assert.equal(recipe.steps[1].timingSuggestions, undefined);
 });
@@ -125,7 +126,7 @@ test('pasted text requires labelled sections and preserves missing data', () => 
   assert.equal(result.recipes[0].title, 'Sample plate');
   assert.equal(result.recipes[0].ingredients.length, 2);
   assert.equal(result.recipes[0].steps.length, 2);
-  assert.equal(result.recipes[0].steps[1].minutes, null);
+  assert.equal(result.recipes[0].steps[1].minutes, 5);
   assert.equal(extractTextRecipe({ text: 'Make a tasty dish from these vague notes.' }).status, 'not_recipe');
   assert.equal(extractTextRecipe({ text: 'Ingredients\n1 test item', title: 'Only ingredients' }).status, 'partial');
 });
